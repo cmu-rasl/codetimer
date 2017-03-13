@@ -8,17 +8,15 @@ using namespace std::chrono;
 
 struct RecordedValue {
 public:
-    double totalSecs {0};
-    long occurrences {0};
+    std::vector<float> secs;
     std::string name;
 };
 
 void CodeTimer::record(std::string name, std::chrono::high_resolution_clock::time_point start) {
     auto stop = high_resolution_clock::now();
-    auto diff = duration_cast<duration<double>>(stop - start);
+    auto diff = duration_cast<duration<float>>(stop - start);
     auto updateFunction = [&diff](std::unique_ptr<RecordedValue>& existingValue) {
-        existingValue->occurrences++;
-        existingValue->totalSecs += diff.count();
+        existingValue->secs.push_back(diff.count());
     };
     // We try a regular update before calling upsert here. We assume that updates will be much
     // more common than insertions, and this avoids creating unnecessary RecordedValue instances
@@ -26,8 +24,7 @@ void CodeTimer::record(std::string name, std::chrono::high_resolution_clock::tim
     // there are race conditions between threads, which is likely to be rare.
     if (!CodeTimer::timerMap.update_fn(name, updateFunction)) {
         RecordedValue *newValue = new RecordedValue();
-        newValue->totalSecs = diff.count();
-        newValue->occurrences = 1;
+        newValue->secs.push_back(diff.count());
         newValue->name = name;
         CodeTimer::timerMap.upsert(name, updateFunction, std::unique_ptr<RecordedValue>(newValue));
     }
@@ -40,10 +37,16 @@ void CodeTimer::printStats() {
         vals.push_back(item.second.get());
     }
     std::sort(begin(vals), end(vals), [](RecordedValue* t1, RecordedValue* t2) {
-        return t1->totalSecs > t2->totalSecs;
+        return t1->name > t2->name;
     });
     for (auto val : vals) {
-        std::cout << val->name << ": total=" << val->totalSecs << "; occurrences=" << val->occurrences;
+        float sum = std::accumulate(val->secs.begin(), val->secs.end(), 0.0f);
+        float mean = sum / static_cast<float>(val->secs.size());
+        std::vector<float> diff(val->secs.size());
+        std::transform(val->secs.begin(), val->secs.end(), diff.begin(), [mean](float x) { return x - mean; });
+        float sq_sum = std::inner_product(diff.begin(), diff.end(), diff.begin(), 0.0f);
+        float stdev = std::sqrt(sq_sum / static_cast<float>(val->secs.size()));
+        std::cout << val->name << ": total=" << sum << "; occurrences=" << val->secs.size()<< "; average="<< mean <<"; std. dev="<<stdev;
         std::cout << std::endl;
     }
 }
